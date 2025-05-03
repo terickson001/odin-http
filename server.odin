@@ -21,11 +21,11 @@ import "nbio"
 Server_Opts :: struct {
 	// Whether the server should accept every request that sends a "Expect: 100-continue" header automatically.
 	// Defaults to true.
-	auto_expect_continue:    bool,
+	auto_expect_continue: bool,
 	// When this is true, any HEAD request is automatically redirected to the handler as a GET request.
 	// Then, when the response is sent, the body is removed from the response.
 	// Defaults to true.
-	redirect_head_to_get:    bool,
+	redirect_head_to_get: bool,
 	// Limit the maximum number of bytes to read for the request line (first line of request containing the URI).
 	// The HTTP spec does not specify any limits but in practice it is safer.
 	// RFC 7230 3.1.1 says:
@@ -33,13 +33,13 @@ Server_Opts :: struct {
 	// practice.  It is RECOMMENDED that all HTTP senders and recipients
 	// support, at a minimum, request-line lengths of 8000 octets.
 	// defaults to 8000.
-	limit_request_line:      int,
+	limit_request_line:   int,
 	// Limit the length of the headers.
 	// The HTTP spec does not specify any limits but in practice it is safer.
 	// defaults to 8000.
-	limit_headers:           int,
+	limit_headers:        int,
 	// The thread count to use, defaults to your core count - 1.
-	thread_count:            int,
+	thread_count:         int,
 
 	// // The initial size of the temp_allocator for each connection, defaults to 256KiB and doubles
 	// // each time it needs to grow.
@@ -52,10 +52,10 @@ Server_Opts :: struct {
 }
 
 Default_Server_Opts := Server_Opts {
-	auto_expect_continue    = true,
-	redirect_head_to_get    = true,
-	limit_request_line      = 8000,
-	limit_headers           = 8000,
+	auto_expect_continue = true,
+	redirect_head_to_get = true,
+	limit_request_line   = 8000,
+	limit_headers        = 8000,
 	// initial_temp_block_cap  = 256 * mem.Kilobyte,
 	// max_free_blocks_queued  = 64,
 }
@@ -86,7 +86,6 @@ Server :: struct {
 	conn_allocator: mem.Allocator,
 	handler:        Handler,
 	main_thread:    int,
-
 	threads:        []^thread.Thread,
 	// Once the server starts closing/shutdown this is set to true, all threads will check it
 	// and start their thread local shutdown procedure.
@@ -129,7 +128,9 @@ listen :: proc(
 	s: ^Server,
 	endpoint: net.Endpoint = Default_Endpoint,
 	opts: Server_Opts = Default_Server_Opts,
-) -> (err: net.Network_Error) {
+) -> (
+	err: net.Network_Error,
+) {
 	s.opts = opts
 	s.conn_allocator = context.allocator
 	s.main_thread = sync.current_thread_id()
@@ -141,7 +142,7 @@ listen :: proc(
 	assert(errno == os.ERROR_NONE)
 
 	s.tcp_sock, err = nbio.open_and_listen_tcp(&td.io, endpoint)
-	if err != nil { server_shutdown(s) }
+	if err != nil {server_shutdown(s)}
 	return
 }
 
@@ -177,7 +178,9 @@ listen_and_serve :: proc(
 	h: Handler,
 	endpoint: net.Endpoint = Default_Endpoint,
 	opts: Server_Opts = Default_Server_Opts,
-) -> (err: net.Network_Error) {
+) -> (
+	err: net.Network_Error,
+) {
 	listen(s, endpoint, opts) or_return
 	return serve(s, h)
 }
@@ -258,7 +261,7 @@ _server_thread_shutdown :: proc(s: ^Server, loc := #caller_location) {
 	// 	log.infof("had %i temp blocks to spare", blocks)
 	// }
 
-	for i := 0; ; i += 1 {
+	for i := 0;; i += 1 {
 		for sock, conn in td.conns {
 			#partial switch conn.state {
 			case .Active:
@@ -331,6 +334,7 @@ Connection_State :: enum {
 	New, // Got client, waiting to service first request.
 	Active, // Servicing request.
 	Idle, // Waiting for next request.
+	Upgrading, // Waiting for next request.
 	Will_Close, // Closing after the current response is sent.
 	Closing, // Going to close, cleaning up.
 	Closed, // Fully closed.
@@ -389,22 +393,32 @@ connection_close :: proc(c: ^Connection, loc := #caller_location) {
 
 	scanner_destroy(&c.scanner)
 
-	nbio.timeout(&td.io, Conn_Close_Delay, c, proc(c: rawptr) {
-		c := cast(^Connection)c
-		nbio.close(&td.io, c.socket, c, proc(c: rawptr, ok: bool) {
+	nbio.timeout(
+		&td.io,
+		Conn_Close_Delay,
+		c,
+		proc(c: rawptr) {
 			c := cast(^Connection)c
+			nbio.close(
+				&td.io,
+				c.socket,
+				c,
+				proc(c: rawptr, ok: bool) {
+					c := cast(^Connection)c
 
-			log.debugf("closed connection: %i", c.socket)
+					log.debugf("closed connection: %i", c.socket)
 
-			c.state = .Closed
+					c.state = .Closed
 
-			// allocator_destroy(&c.temp_allocator)
-			virtual.arena_destroy(&c.temp_allocator)
+					// allocator_destroy(&c.temp_allocator)
+					virtual.arena_destroy(&c.temp_allocator)
 
-			delete_key(&td.conns, c.socket)
-			free(c, c.server.conn_allocator)
-		})
-	})
+					delete_key(&td.conns, c.socket)
+					free(c, c.server.conn_allocator)
+				},
+			)
+		},
+	)
 }
 
 @(private)
