@@ -75,6 +75,8 @@ Error :: union #shared_nil {
 	net.Dial_Error,
 	net.Parse_Endpoint_Error,
 	net.Network_Error,
+	net.TCP_Recv_Error,
+	net.TCP_Send_Error,
 	bufio.Scanner_Error,
 	Request_Error,
 	SSL_Error,
@@ -232,7 +234,7 @@ response_body :: proc(
 ) {
 	defer res._body_err = err
 	assert(res._body_err == nil)
-    body, was_allocation, err = _parse_body(&res.headers, &res._body, max_length, allocator)
+	body, was_allocation, err = _parse_body(&res.headers, &res._body, max_length, allocator)
 	return
 }
 
@@ -249,7 +251,7 @@ _parse_body :: proc(
 	// See [RFC 7230 3.3.3](https://www.rfc-editor.org/rfc/rfc7230#section-3.3.3) for the rules.
 	// Point 3 paragraph 3 and point 4 are handled before we get here.
 
-	enc, has_enc       := http.headers_get_unsafe(headers^, "transfer-encoding")
+	enc, has_enc := http.headers_get_unsafe(headers^, "transfer-encoding")
 	length, has_length := http.headers_get_unsafe(headers^, "content-length")
 	switch {
 	case has_enc && strings.has_suffix(enc, "chunked"):
@@ -304,7 +306,8 @@ _response_till_close :: proc(_body: ^bufio.Scanner, max_length: int) -> (string,
 	_body.max_token_size = max_length
 	defer _body.max_token_size = bufio.DEFAULT_MAX_SCAN_TOKEN_SIZE
 
-	_body.split = proc(data: []byte, at_eof: bool) -> (advance: int, token: []byte, err: bufio.Scanner_Error, final_token: bool) {
+	_body.split =
+	proc(data: []byte, at_eof: bool) -> (advance: int, token: []byte, err: bufio.Scanner_Error, final_token: bool) {
 		if at_eof {
 			return len(data), data, nil, true
 		}
